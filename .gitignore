@@ -1,0 +1,14 @@
+# CMake build directories
+/build/
+/cmake-build-*/
+
+# Generated benchmark data and graphs
+/results/*.csv
+/results/*.png
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
