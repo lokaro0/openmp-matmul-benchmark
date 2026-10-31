@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 project(openmp_matmul_benchmark VERSION 0.1.0 LANGUAGES C)
 
 add_executable(matmul_benchmark src/main.c)
+target_compile_features(matmul_benchmark PRIVATE c_std_11)
 
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_compile_options(matmul_benchmark PRIVATE -O3 -march=native -fopenmp)

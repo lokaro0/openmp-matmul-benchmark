@@ -1,28 +1,14 @@
-/*
-実行結果 : OK (max relative error = 0.000e+00)
-           n = 1000, 1.300e-01 [sec], 1.539e+01 [GFlops], speedup = 1.181e+01 [times]
-使用したCPU : Intel 13th Core i7-1360P
-gcc バージョン : 14.2.0
-コンパイラオプション : -O3 -march=native -fopenmp -lpthread
-使用した技法について : 
-ループ順序の交換
-ループの順番を変更し、行列Bと行列Cに対するメモリアクセスが行方向とした。
-これにより、CPUのキャッシュメモリを効率的に利用できるようになったと考えられる。
-また、コンパイラオプション（-O3 -march=native）によるSIMD（自動ベクトル化）の最適化が強力に機能するようになった。
-スレッド並列化（OpenMP）
-最も外側のループの直前に "#pragma omp parallel for" を追加し、計算プロセスを並列化した。
-*/
-
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 #include <math.h>
+#include <omp.h>
+#include <errno.h>
+#include <limits.h>
 
 #define drand48() ((double)rand() / (RAND_MAX + 1.0))
-#define BLOCK_SIZE 64
 
 
-void matmul (double* A, double* B, double* C, int n) {
+void matmul_ijk_serial (const double* A, const double* B, double* C, int n) {
     for (int i = 0; i < n; ++i) {
         for (int j = 0; j < n; ++j) {
             double sum = 0.0;
@@ -34,8 +20,22 @@ void matmul (double* A, double* B, double* C, int n) {
     }
 }
 
-// 自分で実装した行列積コード
-void mymatmul (double* A, double* B, double* C, int n) {
+void matmul_ikj_serial (const double* A, const double* B, double* C, int n) {
+    for (int i = 0; i < n * n; i++) {
+        C[i] = 0.0;
+    }
+
+    for (int i = 0; i < n; ++i) {
+        for (int k = 0; k < n; ++k) {
+            double a_ik = A[i * n + k];
+
+            for (int j = 0; j < n; ++j)
+                C[i * n + j] += a_ik * B[k * n + j];
+        }
+    }
+}
+
+void matmul_ikj_openmp (const double* A, const double* B, double* C, int n) {
     #pragma omp parallel for
     for (int i = 0; i < n * n; i++) {
         C[i] = 0.0;
@@ -43,70 +43,201 @@ void mymatmul (double* A, double* B, double* C, int n) {
 
     #pragma omp parallel for
     for (int i = 0; i < n; ++i) {
-        for (int j = 0; j < n; ++j) {
-            double a_ij = A[i * n + j];
+        for (int k = 0; k < n; ++k) {
+            double a_ik = A[i * n + k];
 
-            for (int k = 0; k < n; ++k)
-                C[i * n + k] += a_ij * B[j * n + k];
+            for (int j = 0; j < n; ++j)
+                C[i * n + j] += a_ik * B[k * n + j];
         }
     }
-} 
-
-double getSec (struct timespec startTime, struct timespec endTime) {
-    return (endTime.tv_sec - startTime.tv_sec) + (endTime.tv_nsec - startTime.tv_nsec) * 1.e-9;
 }
 
-double getGFlops (double elapsed_time, int n) {
+double calculate_gflops (double elapsed_time, int n) {
     double flops = 2.0 * n * n * n;
     double flops_per_second = flops / elapsed_time / 1e9;
     return flops_per_second;
-} 
+}
 
-int compare (double *C, double *C_ref, int n) {
-    double max_error = 0.0;
-    double relative_error;
+int compare (const double *actual, const double *reference, int n) {
+    const double absolute_tolerance = 1e-12;
+    const double relative_tolerance = 1e-8;
 
-    for (int i = 0; i < n * n; i++) {
-        if (C_ref[i] != 0.0) {
-            relative_error = fabs(C[i] - C_ref[i]) / fabs(C_ref[i]);
-            if (relative_error > max_error)
-                max_error = relative_error;
+    size_t element_count = (size_t)n * (size_t)n;
+
+    for (size_t index = 0; index < element_count; index++) {
+        double actual_value = actual[index];
+        double reference_value = reference[index];
+
+        if (!isfinite(actual_value) || !isfinite(reference_value)) {
+            fprintf(
+                stderr,
+                "NG (non-finite value at index %zu: actual = %.17g, reference = %.17g)\n",
+                index, actual_value, reference_value
+            );
+            return 0;
+        }
+
+        double absolute_error =
+            fabs(actual_value - reference_value);
+
+        double allowed_error =
+            absolute_tolerance
+            + relative_tolerance * fabs(reference_value);
+
+        if (absolute_error > allowed_error) {
+            fprintf(
+                stderr,
+                "NG (index = %zu, actual = %.17g, "
+                "reference = %.17g, absolute error = %.3e, allowed error = %.3e)\n",
+                index, actual_value,
+                reference_value, absolute_error, allowed_error
+            );
+            return 0;
         }
     }
 
-    if (max_error <= 1e-8) {
-        printf("OK (max relative error = %.3e)\n", max_error);
-        return 1;
-    } else {
-        printf("NG (max relative error = %.3e)\n", max_error);
-        return 0;
-    }
-} 
+    return 1;
+}
+
+typedef void (*matmul_function) (
+    const double *A,
+    const double *B,
+    double *C,
+    int n
+);
+
+enum {
+    MEASUREMENT_COUNT = 5
+};
+
+struct benchmark_case {
+    const char *name;
+    matmul_function function;
+    double *output_matrix;
+    double elapsed_seconds[MEASUREMENT_COUNT];
+};
 
 int main(int argc, char *argv[]) {
-    int n = atoi (argv[1]);
-    double *A = (double *)malloc(n * n * sizeof(double));
-    double *B = (double *)malloc(n * n * sizeof(double));
-    double *C = (double *)malloc(n * n * sizeof(double));
-    double *C_ref = (double *)malloc(n * n * sizeof(double));
+    fprintf(stderr, "Timer resolution: %.9e [s]\n", omp_get_wtick());
 
-    struct timespec startTime, endTime;
-    for (int i = 0; i < n * n; i++) A[i] = B[i] = drand48();
-    clock_gettime(CLOCK_REALTIME, &startTime);
-    
-    matmul(A, B, C_ref, n);
-    clock_gettime(CLOCK_REALTIME, &endTime);
-    double sec_ref = getSec (startTime, endTime);
-    clock_gettime(CLOCK_REALTIME, &startTime);
-
-    mymatmul(A, B, C, n);
-    clock_gettime(CLOCK_REALTIME, &endTime);
-    double sec = getSec (startTime, endTime);
-
-    if (compare (C, C_ref, n)) {
-        double gflops = getGFlops (sec, n);
-        double speedup = sec_ref/sec;
-        printf("n = %d, %.3e [sec], %.3e [GFlops], speedup = %.3e [times]\n", n, sec, gflops, speedup);
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <matrix_size>\n", argv[0]);
+        return EXIT_FAILURE;
     }
-    free(A); free(B); free(C); free(C_ref);
+
+    errno = 0;
+    char *end_pointer;
+    long parsed_size = strtol(argv[1], &end_pointer, 10);
+
+    if (
+        errno != 0
+        || end_pointer == argv[1]
+        || *end_pointer != '\0'
+        || parsed_size <= 0
+        || parsed_size > INT_MAX
+        || parsed_size > INT_MAX / parsed_size
+    ) {
+        fprintf(stderr,"Error: matrix_size is invalid or too large.\n");
+        return EXIT_FAILURE;
+    }
+
+    int n = (int)parsed_size;
+    int repetitions_per_measurement;
+
+    if (n <= 256) {
+        repetitions_per_measurement = 100;
+    } else if (n <= 512) {
+        repetitions_per_measurement = 20;
+    } else {
+        repetitions_per_measurement = 5;
+    }
+
+    size_t element_count = (size_t)n * (size_t)n;
+    size_t matrix_bytes = element_count * sizeof(double);
+
+    double *A = (double *)malloc(matrix_bytes);
+    double *B = (double *)malloc(matrix_bytes);
+    double *C_ijk_serial = (double *)malloc(matrix_bytes);
+    double *C_ikj_serial = (double *)malloc(matrix_bytes);
+    double *C_ikj_openmp = (double *)malloc(matrix_bytes);
+
+    if (
+        A == NULL
+        || B == NULL
+        || C_ijk_serial == NULL
+        || C_ikj_serial == NULL
+        || C_ikj_openmp == NULL
+    ) {
+        fprintf(stderr, "Error: failed to allocate memory for matrices.\n");
+
+        free(A);
+        free(B);
+        free(C_ijk_serial);
+        free(C_ikj_serial);
+        free(C_ikj_openmp);
+
+        return EXIT_FAILURE;
+    }
+
+    const unsigned int random_seed = 0;
+    srand(random_seed);
+
+    for (size_t index = 0; index < element_count; index++) {
+        A[index] = drand48();
+        B[index] = drand48();
+    }
+
+    /* warm up*/
+    matmul_ijk_serial(A, B, C_ijk_serial, n);
+    matmul_ikj_serial(A, B, C_ikj_serial, n);
+    matmul_ikj_openmp(A, B, C_ikj_openmp, n);
+
+    struct benchmark_case cases[] = {
+        {"ijk_serial", matmul_ijk_serial, C_ijk_serial, {0.0}},
+        {"ikj_serial", matmul_ikj_serial, C_ikj_serial, {0.0}},
+        {"ikj_openmp", matmul_ikj_openmp, C_ikj_openmp, {0.0}},
+    };
+
+    int thread_count = omp_get_max_threads();
+    size_t case_count = sizeof(cases) / sizeof(cases[0]);
+
+    for (size_t trial_index = 0; trial_index < MEASUREMENT_COUNT; ++trial_index) {
+        for (size_t execution_index = 0; execution_index < case_count; ++execution_index) {
+            size_t case_index = (trial_index + execution_index) % case_count;
+            struct benchmark_case *current_case = &cases[case_index];
+
+            double start_time = omp_get_wtime();
+
+            for (int repetition = 0;
+                repetition < repetitions_per_measurement;
+                ++repetition) {
+                current_case->function(
+                    A, B, current_case->output_matrix, n
+                );
+            }
+
+            double total_seconds = omp_get_wtime() - start_time;
+
+            current_case->elapsed_seconds[trial_index] =
+                total_seconds / repetitions_per_measurement;
+
+            double gflops = calculate_gflops(current_case->elapsed_seconds[trial_index], n);
+            printf(
+                "%zu,%s,%d,%d,%.9e,%.9e\n",
+                trial_index + 1, current_case->name, n, thread_count, current_case->elapsed_seconds[trial_index], gflops
+            );
+        }
+    }
+
+    int results_are_correct = 1;
+
+    results_are_correct &= compare(C_ikj_serial, C_ijk_serial, n);
+    results_are_correct &= compare(C_ikj_openmp, C_ijk_serial, n);
+    if (!results_are_correct) {
+        free(A); free(B); free(C_ijk_serial); free(C_ikj_serial); free(C_ikj_openmp);
+        return EXIT_FAILURE;
+    }
+
+    free(A); free(B); free(C_ijk_serial); free(C_ikj_serial); free(C_ikj_openmp);
+    return EXIT_SUCCESS;
 }
