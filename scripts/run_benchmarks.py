@@ -20,10 +20,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXECUTABLE_PATH = PROJECT_ROOT / "build" / "matmul_benchmark.exe"
 OUTPUT_PATH = PROJECT_ROOT / "results" / "raw_results.csv"
 
-RUN_NAME = "run_02"
-RESULTS_DIR = PROJECT_ROOT / "results" / RUN_NAME
-
-
 environment = os.environ.copy()
 environment["OMP_DYNAMIC"] = "FALSE"
 

@@ -9,9 +9,6 @@ import matplotlib.pyplot as plt
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 INPUT_PATH = PROJECT_ROOT / "results" / "raw_results.csv"
 
-RUN_NAME = "run_02"
-RESULTS_DIR = PROJECT_ROOT / "results" / RUN_NAME
-
 OUTPUT_PATH = PROJECT_ROOT / "results" / "summary.csv"
 SUMMARY_COLUMNS = (
     "implementation",
